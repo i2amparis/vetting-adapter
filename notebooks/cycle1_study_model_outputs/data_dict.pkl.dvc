@@ -1,5 +1,0 @@
-outs:
-- md5: a5aaeeda88c914a9b55b9763493c50d8
-  size: 55985636
-  hash: md5
-  path: data_dict.pkl

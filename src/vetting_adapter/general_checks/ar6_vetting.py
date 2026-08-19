@@ -1,9 +1,16 @@
-"""Vetting criteria and targets/ranges for IPCC AR6.
+"""Built-in general vetting checks for IPCC AR6.
+
+This is a general-purpose checkset: the IPCC AR6 vetting criteria are a fixed,
+published standard (not specific to any one project), so they ship as a
+built-in check available to every validation profile by default. See
+`vetting_adapter.general_checks.BUILTIN_CHECKS` and `vetting_adapter.profiles`
+for how this fits into the per-profile check registry.
 
 The full list of `CriterionTargetRange` objects for each of the AR6 vetting
 criteria is given in the `vetting_targets` variable. Objects for the historical
 and future criteria alone are given in the `vetting_targets_historical` and
-`vetting_targets_future` variables, respectively.
+`vetting_targets_future` variables, respectively. `ar6_vetting_target_range_output`
+is the ready-to-use output object built from `vetting_targets`.
 
 Credit: The Criterion objects used here are originally taken from example
 notebooks in the `pathways_ensemble_analysis` package repository.
@@ -19,9 +26,14 @@ from pathways_ensemble_analysis.criteria.base import (
     ChangeOverTimeCriterion,
 )
 
-from .target_classes import (
+from ..core.target_range import (
     CriterionTargetRange,
     RelativeRange,
+)
+from ..core.output.base import (
+    CTCol,
+    MultiCriterionTargetRangeOutput,
+    NoWriter,
 )
 
 
@@ -204,6 +216,23 @@ vetting_targets_future: list[CriterionTargetRange] = [
 
 vetting_targets: list[CriterionTargetRange] = vetting_targets_historical \
     + vetting_targets_future
+
+
+ar6_vetting_target_range_output: MultiCriterionTargetRangeOutput = \
+    MultiCriterionTargetRangeOutput(
+        criteria={_crit.name: _crit for _crit in vetting_targets},
+        writer=NoWriter(),
+        columns=[CTCol.INRANGE, CTCol.VALUE],
+        column_titles={
+            CTCol.INRANGE: 'Passed',
+            CTCol.VALUE: 'Value',
+        },
+        summary_keys={
+            CTCol.INRANGE: 'Pass vs. Fail Summary',
+            CTCol.VALUE: 'Values Summary',
+        },
+    )
+"""Ready-to-use `MultiCriterionTargetRangeOutput` for the AR6 vetting checks."""
 
 
 # For reference, below are the Criterion objects and drop condition

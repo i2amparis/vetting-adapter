@@ -6,7 +6,7 @@ import unittest
 import pyam
 import pandas as pd
 
-from iamcompact_vetting.pyam_helpers import (
+from vetting_adapter.pyam_helpers import (
     make_consistent_units,
     as_pandas_series,
     broadcast_dims

@@ -5,7 +5,7 @@ import pyam
 import pandas as pd
 import numpy as np
 
-from iamcompact_vetting.pdhelpers import replace_level_values
+from vetting_adapter.pdhelpers import replace_level_values
 
 
 

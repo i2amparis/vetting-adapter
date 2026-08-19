@@ -9,15 +9,15 @@ import pandas as pd
 import numpy as np
 import pyam
 
-from iamcompact_vetting.pea_timeseries.timeseries_criteria_core import (
+from vetting_adapter.core.criteria import (
     pyam_series_comparison,
     AggFuncTuple,
     TimeseriesRefCriterion,
     get_diff_comparison,
     get_ratio_comparison,
 )
-from iamcompact_vetting.pea_timeseries.dims import UnknownDimensionNameError
-from iamcompact_vetting.pdhelpers import replace_level_values
+from vetting_adapter.core.dims import UnknownDimensionNameError
+from vetting_adapter.pdhelpers import replace_level_values
 
 from .. import get_test_energy_iamdf_tuple as construct_test_iamdf
 
@@ -33,7 +33,7 @@ class TestPyamSeriesComparison(unittest.TestCase):
             return series1 + series2
 
         with unittest.mock.patch(
-                'iamcompact_vetting.pyam_helpers.make_consistent_units'
+                'vetting_adapter.pyam_helpers.make_consistent_units'
         ) as mock_make_consistent_units:
             mock_make_consistent_units.side_effect = lambda df, match_df: df
 

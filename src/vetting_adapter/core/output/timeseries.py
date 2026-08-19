@@ -11,14 +11,14 @@ import pandas as pd
 from pandas.io.formats.style import Styler as PandasStyler
 import pyam
 
-from ..targets.target_classes import (
+from ..target_range import (
     CriterionTargetRange,
     RelativeRange,
 )
-from ..pea_timeseries.timeseries_criteria_core import (
+from ..criteria import (
     TimeseriesRefCriterion,
 )
-from ..pea_timeseries.dims import DIM
+from ..dims import DIM
 from .base import (
     CTCol,
     CriterionTargetRangeOutput,

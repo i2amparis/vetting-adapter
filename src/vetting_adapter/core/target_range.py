@@ -572,3 +572,74 @@ class CriterionTargetRange:
 
 
 ###END class CriterionTargetRange
+
+
+class RatioTargetRange(CriterionTargetRange):
+    """Generic target range for criteria whose values are ratios to 1.0.
+
+    Intended for use with criteria such as those built by
+    `vetting_adapter.core.criteria.ratio_reference_criterion`, whose
+    `.get_values` method returns the ratio of a value being vetted to some
+    reference value (so that a perfect match is 1.0). By default, the target
+    is 1.0, and either an explicit `range`/`RelativeRange`, or a `tolerance`
+    (interpreted as a symmetric relative tolerance around 1.0) must be given.
+
+    The `.get_distance` method returns the difference between the criterion
+    value and the target (1.0 by default), i.e. it is not normalized by the
+    range unless a `distance_func` is passed explicitly.
+
+    Init Parameters
+    ---------------
+    criterion : Criterion
+        The criterion to build the target range for.
+    target : float, optional
+        Target value. Optional, defaults to 1.0.
+    range : tuple[float, float] or RelativeRange, optional
+        Range of acceptable values. Mutually exclusive with `tolerance`; one
+        of the two must be given.
+    tolerance : float, optional
+        Symmetric relative tolerance around `target`. `range` is set to
+        `RelativeRange(1.0-tolerance, 1.0+tolerance)` if given. Mutually
+        exclusive with `range`; one of the two must be given.
+    distance_func, **kwargs
+        See `CriterionTargetRange.__init__` for the remaining parameters.
+    """
+
+    def _ratio_default_distance_func(self, value: float) -> float:
+        return value - self.target
+    ###END def RatioTargetRange._ratio_default_distance_func
+
+    def __init__(
+            self,
+            criterion: Criterion,
+            target: tp.Optional[float] = None,
+            range: tp.Optional[tuple[float, float]|RelativeRange] = None,
+            *,
+            tolerance: tp.Optional[float] = None,
+            distance_func: tp.Optional[Callable[[float], float]] = None,
+            **kwargs,
+    ):
+        if target is None:
+            target = 1.0
+        if range is not None and tolerance is not None:
+            raise ValueError(
+                '`range` and `tolerance` are mutually exclusive, only one of '
+                'them may be given.'
+            )
+        if range is None:
+            if tolerance is None:
+                raise ValueError(
+                    'Either `range` or `tolerance` must be given.'
+                )
+            range = RelativeRange(1.0-tolerance, 1.0+tolerance)
+        super().__init__(
+            criterion=criterion,
+            target=target,
+            range=range,
+            distance_func=distance_func if distance_func is not None \
+                else self._ratio_default_distance_func,
+            **kwargs
+        )
+    ###END def RatioTargetRange.__init__
+
+###END class RatioTargetRange

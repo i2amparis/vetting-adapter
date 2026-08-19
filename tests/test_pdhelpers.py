@@ -4,7 +4,7 @@ import typing as tp
 
 import pandas as pd
 
-from iamcompact_vetting.pdhelpers import replace_level_values
+from vetting_adapter.pdhelpers import replace_level_values
 
 
 class TestReplaceLevelValues(unittest.TestCase):
