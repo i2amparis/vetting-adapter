@@ -18,7 +18,7 @@ dependencies = [
     "pyyaml>=6.0",
     # Required by pandas.io.formats.style (used for styled output tables)
     "jinja2>=3.1",
-    "nomenclature-adapter @ git+https://github.com/i2amparis/nomenclature-adapter.git@multi_nomenclature",
+    "nomenclature-adapter @ git+https://github.com/i2amparis/nomenclature-adapter.git@main",
 ]
 
 [build-system]
