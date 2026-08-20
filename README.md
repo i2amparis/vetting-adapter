@@ -14,10 +14,10 @@ it can also be imported directly by scripts or notebooks that only need the
 vetting checks (e.g. for exploratory analysis), without any dependency on the
 nomenclature/name-validation side of the stack.
 
-This package started as [CICERO's `iamcompact-vetting`](https://github.com/ciceroOslo/iamcompact-vetting),
+This package started as [CICERO&#39;s `iamcompact-vetting`](https://github.com/ciceroOslo/iamcompact-vetting),
 built specifically for the HORIZON EUROPE project IAM COMPACT (see `NOTICE`
 for funding attribution), and has since been generalized so that project-wide
-checks like IPCC AR6 vetting ship as built-ins while project-specific checks
+checks like IPCC AR6 vetting ship as built-ins. Project-specific checks
 (like the original IAM COMPACT GDP/population harmonization check) are
 declarative specs owned by each project's own definitions repository, rather
 than being hardcoded into this package.
