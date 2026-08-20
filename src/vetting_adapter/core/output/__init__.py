@@ -9,8 +9,8 @@ excel
     Classes that implement writing to and formatting output for Excel files.
 timeseries
     Classes for output from timeseries comparisons.
-iamcompact_outputs
-    Output functionality for IAM COMPACT vetting checks.
+column_names
+    Column name constants used across the output classes.
 
 Subpackages
 -----------

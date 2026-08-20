@@ -1,9 +1,10 @@
 [project]
-name = "iamcompact-vetting"
-version = "0.0.14"
-description = "Vetting checks for model outputs in the HORIZON EUROPE project IAM COMPACT"
+name = "vetting-adapter"
+version = "0.1.0"
+description = "Project-agnostic vetting/assessment checks for IAMC-format model results"
 authors = [
-    { name = "Jan Ivar Korsbakken", email = "janko@cicero.oslo.no" }
+    { name = "Jan Ivar Korsbakken", email = "janko@cicero.oslo.no" },
+    { name = "George Xexakis" }
 ]
 readme = "README.md"
 requires-python = ">= 3.11"
@@ -14,6 +15,10 @@ dependencies = [
     "pandas-indexing>=0.5.1",
     "openpyxl>=3.1.5",
     "xlsxwriter>=3.2.0",
+    "pyyaml>=6.0",
+    # Required by pandas.io.formats.style (used for styled output tables)
+    "jinja2>=3.1",
+    "nomenclature-adapter @ git+https://github.com/i2amparis/nomenclature-adapter.git@multi_nomenclature",
 ]
 
 [build-system]
@@ -35,4 +40,4 @@ dev-dependencies = [
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/iamcompact_vetting"]
+packages = ["src/vetting_adapter"]

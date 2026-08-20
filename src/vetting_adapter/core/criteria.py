@@ -16,6 +16,7 @@ import logging
 
 import pyam
 import pandas as pd
+import numpy as np
 from pandas.core.indexes.frozen import FrozenList
 from pandas.core.groupby import SeriesGroupBy
 import pathways_ensemble_analysis as pea
@@ -229,6 +230,17 @@ class TimeseriesRefCriterion(Criterion):
         The function to use to rate the comparison values. This function should
         take and return single numbers. Optional, by default equals the identity
         function.
+    restrict_to_reference : bool, optional
+        Whether `self.compare` should, by default, restrict the data being
+        compared to only the regions and variables present in `reference`, and
+        use an inner join between the (restricted) input data and `reference`
+        before comparing. This is useful for criteria that compare full model
+        output against a reference dataset that only covers a subset of
+        regions/variables (e.g., a socioeconomic harmonization dataset), so
+        that the comparison is not attempted for regions/variables that the
+        reference dataset simply does not cover. Optional, by default False,
+        in which case `self.compare` behaves exactly as documented in its own
+        docstring unless `filter`/`join` are passed explicitly on each call.
     dim_names : dim.IamDimNames, optional
         The dimension names of the reference `IamDataFrame`s used for reference
         and to be vetted. Optional, defaults to `dims.DIM`
@@ -277,6 +289,7 @@ class TimeseriesRefCriterion(Criterion):
             default_agg_dims: AggDims | str = AggDims.TIME_AND_REGION,
             broadcast_dims: Iterable[str] = ('model', 'scenario'),
             rating_function: Callable[[float], float] = lambda x: x,
+            restrict_to_reference: bool = False,
             dim_names: IamDimNames = DIM,
             *args,
             **kwargs,
@@ -289,6 +302,7 @@ class TimeseriesRefCriterion(Criterion):
         self._region_agg: AggFuncTuple = self._make_agg_func_tuple(region_agg)
         self.agg_dim_order: AggDimOrder = AggDimOrder(agg_dim_order)
         self.default_agg_dims: AggDims = AggDims(default_agg_dims)
+        self.restrict_to_reference: bool = restrict_to_reference
         # Raise ValueError if `broadcast_dims` is not a subset of `reference.dimensions`
         if any(
                 _dim not in reference.dimensions for _dim in broadcast_dims
@@ -378,6 +392,13 @@ class TimeseriesRefCriterion(Criterion):
         the `IamDataFrame` and the `reference` timeseries (after broadcasting),
         but this is not enforced.
 
+        If `self.restrict_to_reference` is True, `iamdf` is first filtered down
+        to only the regions and variables present in `self.reference`, and
+        `filter`/`join` default to restricting the reference data to the
+        (filtered) input's regions/time and using an inner join, respectively,
+        unless overridden by the caller. See the `restrict_to_reference` init
+        parameter for the rationale.
+
         Parameters
         ----------
         iamdf : pyam.IamDataFrame
@@ -423,6 +444,18 @@ class TimeseriesRefCriterion(Criterion):
         pd.Series
             The comparison values for the given `IamDataFrame`.
         """
+        if self.restrict_to_reference:
+            iamdf = iamdf.filter(  # pyright: ignore[reportAssignmentType]
+                region=self.reference.region,
+                variable=self.reference.variable,
+            )
+            if filter is None:
+                filter = {
+                    self.dim_names.REGION: iamdf.region,
+                    self.dim_names.TIME: getattr(iamdf, self.dim_names.TIME),
+                }
+            if join is None:
+                join = 'inner'
         reference: pyam.IamDataFrame
         if filter is not None:
             reference = self.reference.filter(**filter)  # pyright: ignore[reportAssignmentType]
@@ -660,3 +693,73 @@ def get_ratio_comparison(
     else:
         return pyam_series_comparison(_division_func, match_units=match_units)
 ###END def get_ratio_comparison
+
+
+def ratio_reference_criterion(
+        criterion_name: str,
+        reference: pyam.IamDataFrame,
+        *,
+        div_by_zero_value: tp.Optional[float] = np.inf,
+        zero_by_zero_value: tp.Optional[float] = 1.0,
+        region_agg: 'TimeseriesRefCriterion.AggFuncArg' = 'max',
+        time_agg: 'TimeseriesRefCriterion.AggFuncArg' = 'max',
+        default_agg_dims: AggDims = AggDims.TIME,
+        broadcast_dims: Iterable[str] = ('model', 'scenario'),
+        rating_function: tp.Optional[Callable[[float], float]] = None,
+        restrict_to_reference: bool = True,
+) -> 'TimeseriesRefCriterion':
+    """Convenience factory for a `TimeseriesRefCriterion` that compares by ratio.
+
+    Builds a `TimeseriesRefCriterion` whose `.get_values` returns the ratio of
+    the data being vetted to `reference` (1.0 where they are equal, greater
+    than 1.0 where the data exceeds the reference, etc.), restricted by default
+    to the regions/variables covered by `reference` (see the
+    `restrict_to_reference` parameter of `TimeseriesRefCriterion.__init__`).
+
+    This is the general-purpose pattern behind "compare this scenario's
+    timeseries to some reference/harmonization dataset" checks: it takes no
+    project-specific parameters, only the reference dataset and generic
+    comparison/aggregation knobs, so it is suitable both for hand-written
+    checks and for checks built declaratively from a YAML spec (see
+    `vetting_adapter.core.spec`).
+
+    Parameters
+    ----------
+    criterion_name : str
+        Name of the criterion.
+    reference : pyam.IamDataFrame
+        The reference timeseries to compare against.
+    div_by_zero_value, zero_by_zero_value : float, optional
+        Passed to `get_ratio_comparison`. Defaults to `numpy.inf` and `1.0`
+        respectively, i.e., a division by zero is treated as an infinite
+        deviation unless the data being vetted is also zero, in which case the
+        ratio is treated as a perfect match (`1.0`).
+    region_agg, time_agg, default_agg_dims, broadcast_dims, restrict_to_reference
+        Passed straight through to `TimeseriesRefCriterion.__init__`. See its
+        docstring for details. `restrict_to_reference` defaults to True here,
+        unlike in `TimeseriesRefCriterion.__init__` itself.
+    rating_function : callable, optional
+        Passed to `TimeseriesRefCriterion.__init__`. Optional, defaults to the
+        identity function.
+
+    Returns
+    -------
+    TimeseriesRefCriterion
+        The constructed criterion.
+    """
+    return TimeseriesRefCriterion(
+        criterion_name=criterion_name,
+        reference=reference,
+        comparison_function=get_ratio_comparison(
+            div_by_zero_value=div_by_zero_value,
+            zero_by_zero_value=zero_by_zero_value,
+        ),
+        region_agg=region_agg,
+        time_agg=time_agg,
+        default_agg_dims=default_agg_dims,
+        broadcast_dims=broadcast_dims,
+        rating_function=rating_function if rating_function is not None \
+            else (lambda x: x),
+        restrict_to_reference=restrict_to_reference,
+    )
+###END def ratio_reference_criterion

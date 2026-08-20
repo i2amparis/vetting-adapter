@@ -6,8 +6,8 @@ ResultOutput
     Abstract base class for creating output from results. Is intended to be take
     results from one instance or a collection of instances of either
     `pathways_ensemble_analysis.Criterion` (including
-    `iamcompact_vetting.criteria.TimeseriesRefCriterion`) or
-    `iamcompact_vetting.targets.CriterionTargetRange` subclasses. Different
+    `vetting_adapter.core.criteria.TimeseriesRefCriterion`) or
+    `vetting_adapter.core.target_range.CriterionTargetRange` subclasses. Different
     subclasses will implement output for different types and collections of
     these classes. The subclasses should generally implement the
     `prepare_output` method to return a nominally format-independent output data
@@ -19,7 +19,7 @@ ResultsWriter
     intended for use with a specific subclass of `ResultOutput` (which in turn
     is designed to be used with a specific instance or collection of instances
     of `pathways_ensemble_analysis.Criterion` or
-    `iamcompact_vetting.targets.CriterionTargetRange` subclasses).
+    `vetting_adapter.core.target_range.CriterionTargetRange` subclasses).
 """
 from abc import ABC, abstractmethod
 from collections.abc import (
@@ -49,7 +49,7 @@ from .styling.base import (
     InRangeStyles,
     PassFailStyles,
 )
-from ..targets.target_classes import CriterionTargetRange
+from ..target_range import CriterionTargetRange
 
 CritTypeVar = tp.TypeVar('CritTypeVar')
 """TypeVar for the type of `Criterion` or `CriterionTargetRange` expected by a
@@ -163,8 +163,8 @@ class ResultOutput(
 
     Is intended to be take results from one instance or a collection of
     instances of either `pathways_ensemble_analysis.Criterion` (including
-    `iamcompact_vetting.criteria.TimeseriesRefCriterion`) or
-    `iamcompact_vetting.targets.CriterionTargetRange` subclasses. Different
+    `vetting_adapter.core.criteria.TimeseriesRefCriterion`) or
+    `vetting_adapter.core.target_range.CriterionTargetRange` subclasses. Different
     subclasses will implement output for different types and collections of
     these classes. The subclasses should generally implement the
     `prepare_output` method to return a nominally format-independent output
