@@ -511,13 +511,21 @@ def _build_historical_comparison(
         file : str, required
             Path (relative to `repo_root`) to the reference data file (in
             any format `pyam.IamDataFrame` can read, e.g. `.xlsx` or `.csv`).
+    region_aliases : dict[str, list[str]], optional
+        Maps a reference region name to a list of alternative names that
+        refer to the *same* region (e.g. a plainer or more common spelling
+        that a checked dataset might use instead of the canonical name).
+        Tried, in order, if the reference region itself is not present in
+        the checked dataset. Since these are the same region, percent
+        difference is still computed when an alias matches.
     region_fallbacks : dict[str, str], optional
         Maps a reference region name to a fallback region name to look for
-        in the checked dataset if the reference region itself is not
-        present. Used for reference regions that are broader/narrower than a
+        in the checked dataset if neither the reference region nor any of
+        its `region_aliases` are present. Unlike `region_aliases`, this is
+        for reference regions that are genuinely broader/narrower than a
         region the checked dataset is likely to use (e.g. a historical
         value reported for a wider country aggregate than the checked
-        dataset's own region). When the fallback is used, no percent
+        dataset's own region): when the fallback is used, no percent
         difference is computed (only the checked and historical values,
         since the regions do not actually match).
     comparison : dict, optional
@@ -538,6 +546,15 @@ def _build_historical_comparison(
         )
     reference: pyam.IamDataFrame = pyam.IamDataFrame(reference_file)
 
+    region_aliases: dict[str, list[str]] = spec.get('region_aliases', {}) or {}
+    if not isinstance(region_aliases, dict) or not all(
+            isinstance(_v, list) for _v in region_aliases.values()
+    ):
+        raise CheckSpecError(
+            f'"region_aliases" in checkset spec "{spec_file}" must be a '
+            'mapping from reference region name to a list of alias names.'
+        )
+
     region_fallbacks: dict[str, str] = spec.get('region_fallbacks', {}) or {}
     if not isinstance(region_fallbacks, dict):
         raise CheckSpecError(
@@ -549,10 +566,7 @@ def _build_historical_comparison(
     broadcast_dims: list[str] = \
         list(comparison_cfg.get('broadcast_dims', ['model', 'scenario']))
 
-    criteria: dict[
-        str,
-        tuple[HistoricalComparisonOutput, tp.Optional[HistoricalComparisonOutput]],
-    ] = {}
+    criteria: dict[str, list[HistoricalComparisonOutput]] = {}
     variable_region_pairs: set[tuple[str, str]] = set(
         reference.data[['variable', 'region']]
             .drop_duplicates()
@@ -569,23 +583,32 @@ def _build_historical_comparison(
         _reference_slice: pyam.IamDataFrame = reference.filter(
             variable=_variable, region=_region,
         )  # pyright: ignore[reportAssignmentType]
-        _exact: HistoricalComparisonOutput = HistoricalComparisonOutput(
-            reference=_reference_slice,
-            variable=_variable,
-            region=_region,
-            broadcast_dims=broadcast_dims,
-        )
-        _fallback: tp.Optional[HistoricalComparisonOutput] = None
+        _candidates: list[HistoricalComparisonOutput] = [
+            HistoricalComparisonOutput(
+                reference=_reference_slice,
+                variable=_variable,
+                region=_region,
+                broadcast_dims=broadcast_dims,
+            )
+        ]
+        for _alias_region in region_aliases.get(_region, []):
+            _candidates.append(HistoricalComparisonOutput(
+                reference=_reference_slice,
+                variable=_variable,
+                region=_region,
+                broadcast_dims=broadcast_dims,
+                fallback_from_region=_alias_region,
+            ))
         if _region in region_fallbacks:
-            _fallback = HistoricalComparisonOutput(
+            _candidates.append(HistoricalComparisonOutput(
                 reference=_reference_slice,
                 variable=_variable,
                 region=_region,
                 broadcast_dims=broadcast_dims,
                 include_pct_diff=False,
                 fallback_from_region=region_fallbacks[_region],
-            )
-        criteria[_name] = (_exact, _fallback)
+            ))
+        criteria[_name] = _candidates
 
     return MultiHistoricalComparisonOutput(criteria)
 ###END def _build_historical_comparison

@@ -297,12 +297,13 @@ class TestBuildHistoricalComparison(unittest.TestCase):
     def test_fallback_only_attached_to_configured_region(self):
         spec_file: Path = _write_spec(self.tmp_dir, self._base_spec())
         _, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
-        _exact_pop, fallback_pop = \
-            output.criteria['Population (European Union (R9))']
-        self.assertIsNone(fallback_pop)
-        _exact_plastics, fallback_plastics = \
+        self.assertEqual(
+            len(output.criteria['Population (European Union (R9))']), 1
+        )
+        plastics_candidates = \
             output.criteria['Production|Chemicals|Plastics (EU27+UK+NO+CH)']
-        self.assertIsNotNone(fallback_plastics)
+        self.assertEqual(len(plastics_candidates), 2)
+        self.assertFalse(plastics_candidates[1].include_pct_diff)
     ###END def test_fallback_only_attached_to_configured_region
 
     def test_end_to_end_applicability_and_values(self):
@@ -316,24 +317,42 @@ class TestBuildHistoricalComparison(unittest.TestCase):
         ], columns=['model', 'scenario', 'region', 'variable', 'unit',
                     'year', 'value']))
 
-        pop_result = output.get_applicable_output(
+        pop_output = output.get_applicable_output(
             'Population (European Union (R9))', checked
         )
-        self.assertIsNotNone(pop_result)
-        pop_output, pop_is_fallback = pop_result
-        self.assertFalse(pop_is_fallback)
+        self.assertIsNotNone(pop_output)
+        self.assertTrue(pop_output.include_pct_diff)
         self.assertAlmostEqual(
             pop_output.prepare_output(checked)['checked_values'][2019].iloc[0],
             440.0,
         )
 
-        plastics_result = output.get_applicable_output(
+        plastics_output = output.get_applicable_output(
             'Production|Chemicals|Plastics (EU27+UK+NO+CH)', checked
         )
-        self.assertIsNotNone(plastics_result)
-        _plastics_output, plastics_is_fallback = plastics_result
-        self.assertTrue(plastics_is_fallback)
+        self.assertIsNotNone(plastics_output)
+        self.assertFalse(plastics_output.include_pct_diff)
     ###END def test_end_to_end_applicability_and_values
+
+    def test_region_alias_matches_and_keeps_pct_diff(self):
+        spec = self._base_spec()
+        spec['region_aliases'] = {'European Union (R9)': ['EU27']}
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        _, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+
+        checked = pyam.IamDataFrame(pd.DataFrame([
+            ['modelX', 'scenY', 'EU27', 'Population', 'million', 2019, 440.0],
+        ], columns=['model', 'scenario', 'region', 'variable', 'unit',
+                    'year', 'value']))
+        pop_output = output.get_applicable_output(
+            'Population (European Union (R9))', checked
+        )
+        self.assertIsNotNone(pop_output)
+        self.assertTrue(pop_output.include_pct_diff)
+        tables = pop_output.prepare_output(checked)
+        self.assertIn('pct_diff', tables)
+        self.assertFalse(tables['pct_diff'].empty)
+    ###END def test_region_alias_matches_and_keeps_pct_diff
 
     def test_missing_reference_file_raises(self):
         spec = self._base_spec()
@@ -342,6 +361,14 @@ class TestBuildHistoricalComparison(unittest.TestCase):
         with self.assertRaises(CheckSpecError):
             build_check_from_spec(spec_file, repo_root=self.tmp_dir)
     ###END def test_missing_reference_file_raises
+
+    def test_invalid_region_aliases_type_raises(self):
+        spec = self._base_spec()
+        spec['region_aliases'] = {'European Union (R9)': 'not_a_list'}
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        with self.assertRaises(CheckSpecError):
+            build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+    ###END def test_invalid_region_aliases_type_raises
 
     def test_invalid_region_fallbacks_type_raises(self):
         spec = self._base_spec()

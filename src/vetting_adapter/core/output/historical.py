@@ -11,12 +11,12 @@ how closely the scenario follows history. There is no pass/fail result.
 Coverage is naturally partial: a checked dataset will often not have every
 variable/region combination present in the reference data. Rather than
 raising, `HistoricalComparisonOutput.is_applicable` lets callers check this
-up front (see also `MultiHistoricalComparisonOutput`, which every checked
-name maps to a pair of exact/fallback-region `HistoricalComparisonOutput`
-instances, used to build a "not applicable" listing for the checked
-dataset).
+up front (see also `MultiHistoricalComparisonOutput`, which maps each checked
+name to an ordered list of exact/alias/fallback-region
+`HistoricalComparisonOutput` candidates, used to build a "not applicable"
+listing for the checked dataset).
 """
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 import typing as tp
 
 import pandas as pd
@@ -226,14 +226,19 @@ class HistoricalComparisonOutput(
 
 
 class MultiHistoricalComparisonOutput:
-    """Registry of `HistoricalComparisonOutput` pairs for a checkset.
+    """Registry of `HistoricalComparisonOutput` candidate lists for a checkset.
 
-    Each named check maps to a 2-tuple `(exact, fallback)`, where `exact`
-    compares against the reference region directly, and `fallback` (may be
-    None) compares against a broader/narrower fallback region with percent
-    difference disabled -- see `HistoricalComparisonOutput` and the
-    `region_fallbacks` checkset spec field in
-    `vetting_adapter.core.spec`.
+    Each named check maps to an ordered list of `HistoricalComparisonOutput`
+    candidates to try in turn: the first (built by `vetting_adapter.core.spec`)
+    always compares against the reference region directly
+    (`fallback_from_region=None`, `include_pct_diff=True`); it may be followed
+    by region-alias candidates (an exact match under a different region name,
+    e.g. `"EU27"` for `"European Union (R9)"` -- still `include_pct_diff=True`,
+    since it is the same region), and/or region-fallback candidates (a
+    genuinely broader/narrower region used as an approximation --
+    `include_pct_diff=False`, since the regions don't actually match). See
+    `HistoricalComparisonOutput` and the `region_aliases`/`region_fallbacks`
+    checkset spec fields in `vetting_adapter.core.spec`.
 
     This is intentionally not a `ResultOutput` subclass: unlike
     `MultiCriterionTargetRangeOutput`, this class is meant to be driven
@@ -243,46 +248,30 @@ class MultiHistoricalComparisonOutput:
 
     def __init__(
             self,
-            criteria: Mapping[
-                str,
-                tuple[
-                    HistoricalComparisonOutput,
-                    tp.Optional[HistoricalComparisonOutput],
-                ],
-            ],
+            criteria: Mapping[str, Sequence[HistoricalComparisonOutput]],
     ):
-        self.criteria: dict[
-            str,
-            tuple[
-                HistoricalComparisonOutput,
-                tp.Optional[HistoricalComparisonOutput],
-            ],
-        ] = dict(criteria)
+        self.criteria: dict[str, list[HistoricalComparisonOutput]] = {
+            _name: list(_candidates)
+            for _name, _candidates in criteria.items()
+        }
     ###END def MultiHistoricalComparisonOutput.__init__
 
     def get_applicable_output(
             self,
             name: str,
             data: pyam.IamDataFrame,
-    ) -> tp.Optional[tuple[HistoricalComparisonOutput, bool]]:
-        """Get the applicable `HistoricalComparisonOutput` for `name`, if any.
+    ) -> tp.Optional[HistoricalComparisonOutput]:
+        """Get the first applicable `HistoricalComparisonOutput` for `name`.
 
-        Checks the exact-region output first, then the fallback output (if
-        any). Returns `None` if neither is applicable to `data`.
-
-        Returns
-        -------
-        (output, is_fallback) : tuple[HistoricalComparisonOutput, bool] or None
-            `output` is the applicable output object, and `is_fallback` is
-            True if it is the fallback (region-approximated, no percent
-            difference) output rather than the exact one. `None` if this
-            checked dataset has no data for either.
+        Tries each candidate for `name` in order (see class docstring) and
+        returns the first one that `.is_applicable(data)`. Callers can check
+        the returned object's `.include_pct_diff` attribute to tell an exact
+        or region-alias match (True) from a region-approximated one (False).
+        Returns `None` if no candidate is applicable to `data`.
         """
-        exact, fallback = self.criteria[name]
-        if exact.is_applicable(data):
-            return exact, False
-        if fallback is not None and fallback.is_applicable(data):
-            return fallback, True
+        for _candidate in self.criteria[name]:
+            if _candidate.is_applicable(data):
+                return _candidate
         return None
     ###END def MultiHistoricalComparisonOutput.get_applicable_output
 
