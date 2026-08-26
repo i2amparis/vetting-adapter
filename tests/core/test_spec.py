@@ -12,6 +12,7 @@ from vetting_adapter.core.spec import (
     CheckSpecError,
 )
 from vetting_adapter.core.output.base import MultiCriterionTargetRangeOutput
+from vetting_adapter.core.output.historical import MultiHistoricalComparisonOutput
 
 
 def _write_spec(tmp_dir: Path, spec: dict, filename: str = 'spec.yaml') -> Path:
@@ -230,3 +231,124 @@ class TestBuildCheckFromSpecUnsupportedType(unittest.TestCase):
     ###END def test_missing_name_raises
 
 ###END class TestBuildCheckFromSpecUnsupportedType
+
+
+def _write_reference_xlsx(tmp_dir: Path, rows: list[dict], filename: str) -> Path:
+    ref_file: Path = tmp_dir / filename
+    pd.DataFrame(rows).to_excel(ref_file, index=False)
+    return ref_file
+###END def _write_reference_xlsx
+
+
+class TestBuildHistoricalComparison(unittest.TestCase):
+    """Tests for the `historical_comparison` checkset spec type."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_dir = Path(self._tmp.name)
+        self.reference_file = _write_reference_xlsx(
+            self.tmp_dir,
+            [
+                {
+                    'Model': 'Historical', 'Scenario': 'MS16',
+                    'Region': 'European Union (R9)', 'Variable': 'Population',
+                    'Unit': 'million', '2019': 446.06, '2020': 446.92,
+                },
+                {
+                    'Model': 'Historical', 'Scenario': 'MS16',
+                    'Region': 'EU27+UK+NO+CH',
+                    'Variable': 'Production|Chemicals|Plastics',
+                    'Unit': 'Mt/yr', '2019': 57.9, '2020': 47.5,
+                },
+            ],
+            'reference.xlsx',
+        )
+    ###END def setUp
+
+    def tearDown(self):
+        self._tmp.cleanup()
+    ###END def tearDown
+
+    def _base_spec(self) -> dict:
+        return {
+            'name': 'test_historical_checkset',
+            'type': 'historical_comparison',
+            'reference': {'file': 'reference.xlsx'},
+            'region_fallbacks': {
+                'EU27+UK+NO+CH': 'European Union (R9)',
+            },
+        }
+    ###END def _base_spec
+
+    def test_builds_one_criterion_per_variable_region_pair(self):
+        spec_file: Path = _write_spec(self.tmp_dir, self._base_spec())
+        name, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+        self.assertEqual(name, 'test_historical_checkset')
+        self.assertIsInstance(output, MultiHistoricalComparisonOutput)
+        self.assertEqual(
+            set(output.criteria.keys()),
+            {
+                'Population (European Union (R9))',
+                'Production|Chemicals|Plastics (EU27+UK+NO+CH)',
+            },
+        )
+    ###END def test_builds_one_criterion_per_variable_region_pair
+
+    def test_fallback_only_attached_to_configured_region(self):
+        spec_file: Path = _write_spec(self.tmp_dir, self._base_spec())
+        _, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+        _exact_pop, fallback_pop = \
+            output.criteria['Population (European Union (R9))']
+        self.assertIsNone(fallback_pop)
+        _exact_plastics, fallback_plastics = \
+            output.criteria['Production|Chemicals|Plastics (EU27+UK+NO+CH)']
+        self.assertIsNotNone(fallback_plastics)
+    ###END def test_fallback_only_attached_to_configured_region
+
+    def test_end_to_end_applicability_and_values(self):
+        spec_file: Path = _write_spec(self.tmp_dir, self._base_spec())
+        _, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+        checked = pyam.IamDataFrame(pd.DataFrame([
+            ['modelX', 'scenY', 'European Union (R9)', 'Population',
+             'million', 2019, 440.0],
+            ['modelX', 'scenY', 'European Union (R9)',
+             'Production|Chemicals|Plastics', 'Mt/yr', 2019, 55.0],
+        ], columns=['model', 'scenario', 'region', 'variable', 'unit',
+                    'year', 'value']))
+
+        pop_result = output.get_applicable_output(
+            'Population (European Union (R9))', checked
+        )
+        self.assertIsNotNone(pop_result)
+        pop_output, pop_is_fallback = pop_result
+        self.assertFalse(pop_is_fallback)
+        self.assertAlmostEqual(
+            pop_output.prepare_output(checked)['checked_values'][2019].iloc[0],
+            440.0,
+        )
+
+        plastics_result = output.get_applicable_output(
+            'Production|Chemicals|Plastics (EU27+UK+NO+CH)', checked
+        )
+        self.assertIsNotNone(plastics_result)
+        _plastics_output, plastics_is_fallback = plastics_result
+        self.assertTrue(plastics_is_fallback)
+    ###END def test_end_to_end_applicability_and_values
+
+    def test_missing_reference_file_raises(self):
+        spec = self._base_spec()
+        spec['reference'] = {'file': 'does_not_exist.xlsx'}
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        with self.assertRaises(CheckSpecError):
+            build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+    ###END def test_missing_reference_file_raises
+
+    def test_invalid_region_fallbacks_type_raises(self):
+        spec = self._base_spec()
+        spec['region_fallbacks'] = ['not', 'a', 'dict']
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        with self.assertRaises(CheckSpecError):
+            build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+    ###END def test_invalid_region_fallbacks_type_raises
+
+###END class TestBuildHistoricalComparison

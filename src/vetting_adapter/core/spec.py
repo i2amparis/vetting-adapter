@@ -7,7 +7,7 @@ repository (see `vetting_adapter.profiles`). This lets a project add its own
 checks without writing any Python code or requiring a release of this
 package.
 
-Two spec `type`s are currently supported:
+Three spec `type`s are currently supported:
 
 `reference_comparison`
     Checks that compare a scenario's timeseries to a reference timeseries by
@@ -20,6 +20,12 @@ Two spec `type`s are currently supported:
     does in hand-written Python for the (project-agnostic) IPCC AR6 vetting
     criteria; use that module as a reference for what this spec type can
     express. See `_build_target_range` for the YAML schema.
+`historical_comparison`
+    Diagnostic (non-blocking) side-by-side comparison of a scenario's
+    historical years to reference values, backed by a reference data file,
+    for whichever variable/region/year combinations the checked dataset
+    actually has. Unlike the other two types, there is no pass/fail result.
+    See `_build_historical_comparison` for the YAML schema.
 
 See `build_check_from_spec` for the entry point.
 """
@@ -49,6 +55,10 @@ from .output.timeseries import (
     TimeseriesRefComparisonAndTargetOutput,
     TimeseriesRefFullComparisonOutput,
 )
+from .output.historical import (
+    HistoricalComparisonOutput,
+    MultiHistoricalComparisonOutput,
+)
 
 
 
@@ -59,7 +69,7 @@ class CheckSpecError(ValueError):
 
 
 SUPPORTED_CHECK_TYPES: tp.Final[tuple[str, ...]] = \
-    ('reference_comparison', 'target_range')
+    ('reference_comparison', 'target_range', 'historical_comparison')
 
 _CRITERION_TYPES: tp.Final[dict[str, tp.Type[Criterion]]] = {
     'single_variable': SingleVariableCriterion,
@@ -103,7 +113,9 @@ def build_check_from_spec(
         repo_root: Path,
 ) -> tuple[
     str,
-    TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput,
+    TimeseriesRefComparisonAndTargetOutput
+        |MultiCriterionTargetRangeOutput
+        |MultiHistoricalComparisonOutput,
 ]:
     """Build a check output object from a checkset YAML spec file.
 
@@ -114,12 +126,12 @@ def build_check_from_spec(
     repo_root : pathlib.Path
         Root directory that paths given in the spec (such as the reference
         data file) are resolved relative to. This is normally the root of the
-        cloned definitions repository that `spec_file` was found in. Only
-        used by the `reference_comparison` spec type.
+        cloned definitions repository that `spec_file` was found in. Used by
+        the `reference_comparison` and `historical_comparison` spec types.
 
     Returns
     -------
-    (name, output) : tuple[str, TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput]
+    (name, output) : tuple[str, TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput|MultiHistoricalComparisonOutput]
         The check name (from the spec's `name` field, used as the key in the
         check registry), and the constructed output object.
 
@@ -127,9 +139,8 @@ def build_check_from_spec(
     ------
     CheckSpecError
         If the spec is missing required fields, refers to an unsupported
-        `type`/`comparison.method`/`criterion_type`, or (for
-        `reference_comparison`) refers to a reference data file that does not
-        exist.
+        `type`/`comparison.method`/`criterion_type`, or refers to a
+        reference data file that does not exist.
     """
     spec: dict = load_spec(spec_file)
     check_type: str = spec.get('type', 'reference_comparison')
@@ -138,11 +149,14 @@ def build_check_from_spec(
             f'Unsupported checkset type "{check_type}" in "{spec_file}". '
             f'Supported types: {", ".join(SUPPORTED_CHECK_TYPES)}.'
         )
-    output: TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput
+    output: TimeseriesRefComparisonAndTargetOutput \
+        |MultiCriterionTargetRangeOutput|MultiHistoricalComparisonOutput
     if check_type == 'reference_comparison':
         output = _build_reference_comparison(spec, repo_root, spec_file=spec_file)
-    else:
+    elif check_type == 'target_range':
         output = _build_target_range(spec, spec_file=spec_file)
+    else:  # check_type == 'historical_comparison'
+        output = _build_historical_comparison(spec, repo_root, spec_file=spec_file)
     return spec['name'], output
 ###END def build_check_from_spec
 
@@ -469,3 +483,109 @@ def _build_target_range(
         summary_keys=summary_keys,
     )
 ###END def _build_target_range
+
+
+def _build_historical_comparison(
+        spec: dict,
+        repo_root: Path,
+        *,
+        spec_file: Path,
+) -> MultiHistoricalComparisonOutput:
+    """Build a `MultiHistoricalComparisonOutput` from a spec of type
+    `historical_comparison`.
+
+    This spec type is for diagnostic (non-blocking) side-by-side comparisons
+    of a checked scenario's values to historical reference values, for
+    whichever variable/region/year combinations the checked dataset actually
+    has. One named check is built automatically for each unique
+    (variable, region) pair found in the reference data file -- there is no
+    need to enumerate them in the YAML spec.
+
+    YAML schema
+    -----------
+    name : str
+        Name of the checkset (used as the key in the check registry).
+    type : str
+        Must be `"historical_comparison"`.
+    reference : dict
+        file : str, required
+            Path (relative to `repo_root`) to the reference data file (in
+            any format `pyam.IamDataFrame` can read, e.g. `.xlsx` or `.csv`).
+    region_fallbacks : dict[str, str], optional
+        Maps a reference region name to a fallback region name to look for
+        in the checked dataset if the reference region itself is not
+        present. Used for reference regions that are broader/narrower than a
+        region the checked dataset is likely to use (e.g. a historical
+        value reported for a wider country aggregate than the checked
+        dataset's own region). When the fallback is used, no percent
+        difference is computed (only the checked and historical values,
+        since the regions do not actually match).
+    comparison : dict, optional
+        broadcast_dims : list[str], optional
+            Passed to `HistoricalComparisonOutput`. Optional, defaults to
+            `["model", "scenario"]`, i.e. checks are model-agnostic.
+    """
+    reference_cfg: dict = spec.get('reference', {})
+    if 'file' not in reference_cfg:
+        raise CheckSpecError(
+            f'Checkset spec "{spec_file}" is missing "reference.file".'
+        )
+    reference_file: Path = repo_root / reference_cfg['file']
+    if not reference_file.is_file():
+        raise CheckSpecError(
+            f'Reference data file "{reference_file}" (from checkset spec '
+            f'"{spec_file}") does not exist.'
+        )
+    reference: pyam.IamDataFrame = pyam.IamDataFrame(reference_file)
+
+    region_fallbacks: dict[str, str] = spec.get('region_fallbacks', {}) or {}
+    if not isinstance(region_fallbacks, dict):
+        raise CheckSpecError(
+            f'"region_fallbacks" in checkset spec "{spec_file}" must be a '
+            'mapping from reference region name to fallback region name.'
+        )
+
+    comparison_cfg: dict = spec.get('comparison', {})
+    broadcast_dims: list[str] = \
+        list(comparison_cfg.get('broadcast_dims', ['model', 'scenario']))
+
+    criteria: dict[
+        str,
+        tuple[HistoricalComparisonOutput, tp.Optional[HistoricalComparisonOutput]],
+    ] = {}
+    variable_region_pairs: set[tuple[str, str]] = set(
+        reference.data[['variable', 'region']]
+            .drop_duplicates()
+            .itertuples(index=False, name=None)
+    )
+    for _variable, _region in sorted(variable_region_pairs):
+        _name: str = f'{_variable} ({_region})'
+        if _name in criteria:
+            raise CheckSpecError(
+                f'Duplicate (variable, region) pair "{_name}" in reference '
+                f'data file "{reference_file}" (from checkset spec '
+                f'"{spec_file}").'
+            )
+        _reference_slice: pyam.IamDataFrame = reference.filter(
+            variable=_variable, region=_region,
+        )  # pyright: ignore[reportAssignmentType]
+        _exact: HistoricalComparisonOutput = HistoricalComparisonOutput(
+            reference=_reference_slice,
+            variable=_variable,
+            region=_region,
+            broadcast_dims=broadcast_dims,
+        )
+        _fallback: tp.Optional[HistoricalComparisonOutput] = None
+        if _region in region_fallbacks:
+            _fallback = HistoricalComparisonOutput(
+                reference=_reference_slice,
+                variable=_variable,
+                region=_region,
+                broadcast_dims=broadcast_dims,
+                include_pct_diff=False,
+                fallback_from_region=region_fallbacks[_region],
+            )
+        criteria[_name] = (_exact, _fallback)
+
+    return MultiHistoricalComparisonOutput(criteria)
+###END def _build_historical_comparison
