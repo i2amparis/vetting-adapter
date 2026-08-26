@@ -987,6 +987,14 @@ class MultiCriterionTargetRangeOutput(
         else:
             self._default_include_summary = True if summary_keys is not None \
                 else False
+        if column_titles is not None:
+            self._default_column_titles = dict(**column_titles)
+        elif not hasattr(self, '_default_column_titles'):
+            self._default_column_titles = {
+                CTCol.INRANGE: 'Is in target range',
+                CTCol.DISTANCE: 'Rel. distance from target',
+                CTCol.VALUE: 'Value',
+            }
         if summary_keys is not None:
             self._default_summary_keys = dict(**summary_keys)
         elif not hasattr(self, '_default_summary_keys'):
@@ -1019,14 +1027,6 @@ class MultiCriterionTargetRangeOutput(
                 CTCol.DISTANCE,
                 CTCol.VALUE,
             ]
-        if column_titles is not None:
-            self._default_column_titles = dict(**column_titles)
-        elif not hasattr(self, '_default_column_titles'):
-            self._default_column_titles = {
-                CTCol.INRANGE: 'Is in target range',
-                CTCol.DISTANCE: 'Rel. distance from target',
-                CTCol.VALUE: 'Value',
-            }
         if summary_column_name_source is not None:
             self._default_summary_column_name_source = \
                 summary_column_name_source

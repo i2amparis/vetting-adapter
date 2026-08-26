@@ -2,16 +2,26 @@
 
 This module is the counterpart to `vetting_adapter.general_checks`: instead of
 a fixed, hand-written check, it builds a check output object at runtime from a
-small YAML spec plus a reference data file, both of which are expected to live
-in a project's own definitions repository (see `vetting_adapter.profiles`).
-This lets a project add its own checks (e.g., a harmonization check against
-project-specific reference data) without writing any Python code or requiring
-a release of this package.
+small YAML spec, which is expected to live in a project's own definitions
+repository (see `vetting_adapter.profiles`). This lets a project add its own
+checks without writing any Python code or requiring a release of this
+package.
 
-Only one spec `type` is currently supported: `reference_comparison`, for
-checks that compare a scenario's timeseries to a reference timeseries by
-ratio (e.g., harmonization checks). See `build_check_from_spec` for the YAML
-schema.
+Two spec `type`s are currently supported:
+
+`reference_comparison`
+    Checks that compare a scenario's timeseries to a reference timeseries by
+    ratio (e.g., harmonization checks), backed by a reference data file. See
+    `_build_reference_comparison` for the YAML schema.
+`target_range`
+    Checks with fixed target/range criteria for one or more single
+    variable/year or change-over-time values, not backed by any reference
+    data file. This mirrors what `vetting_adapter.general_checks.ar6_vetting`
+    does in hand-written Python for the (project-agnostic) IPCC AR6 vetting
+    criteria; use that module as a reference for what this spec type can
+    express. See `_build_target_range` for the YAML schema.
+
+See `build_check_from_spec` for the entry point.
 """
 from collections.abc import Callable
 from pathlib import Path
@@ -21,9 +31,20 @@ import numpy as np
 import pyam
 import yaml
 
+from pathways_ensemble_analysis.criteria.base import (
+    Criterion,
+    SingleVariableCriterion,
+    ChangeOverTimeCriterion,
+)
+
 from .criteria import ratio_reference_criterion
-from .target_range import RatioTargetRange, RelativeRange
-from .output.base import CriterionTargetRangeOutput, NoWriter
+from .target_range import CriterionTargetRange, RatioTargetRange, RelativeRange
+from .output.base import (
+    CriterionTargetRangeOutput,
+    MultiCriterionTargetRangeOutput,
+    NoWriter,
+)
+from .output.column_names import CTCol
 from .output.timeseries import (
     TimeseriesRefComparisonAndTargetOutput,
     TimeseriesRefFullComparisonOutput,
@@ -37,7 +58,20 @@ class CheckSpecError(ValueError):
 ###END class CheckSpecError
 
 
-SUPPORTED_CHECK_TYPES: tp.Final[tuple[str, ...]] = ('reference_comparison',)
+SUPPORTED_CHECK_TYPES: tp.Final[tuple[str, ...]] = \
+    ('reference_comparison', 'target_range')
+
+_CRITERION_TYPES: tp.Final[dict[str, tp.Type[Criterion]]] = {
+    'single_variable': SingleVariableCriterion,
+    'change_over_time': ChangeOverTimeCriterion,
+}
+"""Named `Criterion` subclasses that can be referenced by a `target_range`
+checkset spec's `criteria[].criterion_type` field."""
+
+_DISTANCE_FUNC_TYPES: tp.Final[tuple[str, ...]] = ('fixed_denominator',)
+"""Named `distance_func` builders that can be referenced by a `target_range`
+checkset spec's `criteria[].distance_func.type` field. See
+`_build_distance_func`."""
 
 _RATING_FUNCTIONS: tp.Final[dict[str|None, Callable[[float], float]]] = {
     None: lambda x: x,
@@ -67,7 +101,10 @@ def load_spec(spec_file: Path) -> dict:
 def build_check_from_spec(
         spec_file: Path,
         repo_root: Path,
-) -> tuple[str, TimeseriesRefComparisonAndTargetOutput]:
+) -> tuple[
+    str,
+    TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput,
+]:
     """Build a check output object from a checkset YAML spec file.
 
     Parameters
@@ -77,11 +114,12 @@ def build_check_from_spec(
     repo_root : pathlib.Path
         Root directory that paths given in the spec (such as the reference
         data file) are resolved relative to. This is normally the root of the
-        cloned definitions repository that `spec_file` was found in.
+        cloned definitions repository that `spec_file` was found in. Only
+        used by the `reference_comparison` spec type.
 
     Returns
     -------
-    (name, output) : tuple[str, TimeseriesRefComparisonAndTargetOutput]
+    (name, output) : tuple[str, TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput]
         The check name (from the spec's `name` field, used as the key in the
         check registry), and the constructed output object.
 
@@ -89,8 +127,9 @@ def build_check_from_spec(
     ------
     CheckSpecError
         If the spec is missing required fields, refers to an unsupported
-        `type`/`comparison.method`, or refers to a reference data file that
-        does not exist.
+        `type`/`comparison.method`/`criterion_type`, or (for
+        `reference_comparison`) refers to a reference data file that does not
+        exist.
     """
     spec: dict = load_spec(spec_file)
     check_type: str = spec.get('type', 'reference_comparison')
@@ -99,8 +138,11 @@ def build_check_from_spec(
             f'Unsupported checkset type "{check_type}" in "{spec_file}". '
             f'Supported types: {", ".join(SUPPORTED_CHECK_TYPES)}.'
         )
-    output: TimeseriesRefComparisonAndTargetOutput = \
-        _build_reference_comparison(spec, repo_root, spec_file=spec_file)
+    output: TimeseriesRefComparisonAndTargetOutput|MultiCriterionTargetRangeOutput
+    if check_type == 'reference_comparison':
+        output = _build_reference_comparison(spec, repo_root, spec_file=spec_file)
+    else:
+        output = _build_target_range(spec, spec_file=spec_file)
     return spec['name'], output
 ###END def build_check_from_spec
 
@@ -192,3 +234,238 @@ def _build_reference_comparison(
         writer=NoWriter(),
     )
 ###END def _build_reference_comparison
+
+
+def _build_distance_func(
+        entry: tp.Optional[dict],
+        *,
+        criterion_name: str,
+        spec_file: Path,
+) -> tp.Optional[Callable[[float], float]]:
+    """Build a `distance_func` callable from a `criteria[].distance_func` entry.
+
+    Returns None if `entry` is None, meaning `CriterionTargetRange` should use
+    its own default distance function.
+
+    Only one type is currently supported: `fixed_denominator`, which builds
+    `lambda x: x / value`. This is meant for criteria whose target is 0 (so
+    the default distance function would divide by zero for values below the
+    target), mirroring the `distance_func` used for the "CCS from energy
+    2020" criterion in `vetting_adapter.general_checks.ar6_vetting`.
+    """
+    if entry is None:
+        return None
+    if not isinstance(entry, dict) or 'type' not in entry:
+        raise CheckSpecError(
+            f'"distance_func" for criterion "{criterion_name}" in checkset '
+            f'spec "{spec_file}" must be a mapping with a "type" field.'
+        )
+    func_type: str = entry['type']
+    if func_type not in _DISTANCE_FUNC_TYPES:
+        raise CheckSpecError(
+            f'Unsupported distance_func type "{func_type}" for criterion '
+            f'"{criterion_name}" in checkset spec "{spec_file}". Supported '
+            f'types: {", ".join(_DISTANCE_FUNC_TYPES)}.'
+        )
+    if 'value' not in entry:
+        raise CheckSpecError(
+            f'distance_func of type "{func_type}" for criterion '
+            f'"{criterion_name}" in checkset spec "{spec_file}" is missing '
+            '"value".'
+        )
+    denominator: float = float(entry['value'])
+    return lambda x: x / denominator
+###END def _build_distance_func
+
+
+def _build_criterion_target_range(
+        entry: dict,
+        *,
+        spec_file: Path,
+) -> CriterionTargetRange:
+    """Build a single `CriterionTargetRange` from a `criteria[]` list entry.
+
+    See `_build_target_range` for the YAML schema of `entry`.
+    """
+    if not isinstance(entry, dict) or 'name' not in entry:
+        raise CheckSpecError(
+            f'Each item in "criteria" in checkset spec "{spec_file}" must be '
+            'a mapping with a "name" field.'
+        )
+    name: str = entry['name']
+    criterion_type: str = entry.get('criterion_type', 'single_variable')
+    if criterion_type not in _CRITERION_TYPES:
+        raise CheckSpecError(
+            f'Unknown criterion_type "{criterion_type}" for criterion '
+            f'"{name}" in checkset spec "{spec_file}". Supported types: '
+            f'{", ".join(_CRITERION_TYPES)}.'
+        )
+    for required in ('region', 'year', 'variable', 'target'):
+        if required not in entry:
+            raise CheckSpecError(
+                f'Criterion "{name}" in checkset spec "{spec_file}" is '
+                f'missing "{required}".'
+            )
+    unit: tp.Optional[str] = entry.get('unit')
+    criterion_kwargs: dict[str, tp.Any] = dict(
+        criterion_name=name,
+        region=entry['region'],
+        year=int(entry['year']),
+        variable=entry['variable'],
+    )
+    criterion: Criterion
+    if criterion_type == 'single_variable':
+        criterion = SingleVariableCriterion(unit=unit, **criterion_kwargs)
+    else:  # criterion_type == 'change_over_time'
+        if 'reference_year' not in entry:
+            raise CheckSpecError(
+                f'Criterion "{name}" of type "change_over_time" in checkset '
+                f'spec "{spec_file}" is missing "reference_year".'
+            )
+        criterion = ChangeOverTimeCriterion(
+            reference_year=int(entry['reference_year']),
+            **criterion_kwargs,
+        )
+
+    range_keys: list[str] = \
+        [_k for _k in ('range', 'relative_range', 'tolerance') if _k in entry]
+    if len(range_keys) > 1:
+        raise CheckSpecError(
+            f'Criterion "{name}" in checkset spec "{spec_file}" specifies '
+            f'more than one of "range", "relative_range", "tolerance" '
+            f'({", ".join(range_keys)}); only one may be given.'
+        )
+    target_range: tp.Optional[tuple[float, float]|RelativeRange]
+    if 'range' in entry:
+        target_range = tuple(float(_v) for _v in entry['range'])  # pyright: ignore[reportAssignmentType]
+    elif 'relative_range' in entry:
+        target_range = RelativeRange(*entry['relative_range'])
+    elif 'tolerance' in entry:
+        tolerance: float = float(entry['tolerance'])
+        target_range = RelativeRange(1.0-tolerance, 1.0+tolerance)
+    else:
+        target_range = None
+
+    distance_func: tp.Optional[Callable[[float], float]] = _build_distance_func(
+        entry.get('distance_func'), criterion_name=name, spec_file=spec_file,
+    )
+
+    return CriterionTargetRange(
+        criterion=criterion,
+        target=float(entry['target']),
+        range=target_range,
+        unit=unit,
+        distance_func=distance_func,
+    )
+###END def _build_criterion_target_range
+
+
+def _parse_ctcol(value: str, *, spec_file: Path) -> CTCol:
+    try:
+        return CTCol(value)
+    except ValueError:
+        raise CheckSpecError(
+            f'Unknown output column "{value}" in checkset spec "{spec_file}". '
+            f'Supported columns: {", ".join(_c.value for _c in CTCol)}.'
+        ) from None
+###END def _parse_ctcol
+
+
+def _build_target_range(
+        spec: dict,
+        *,
+        spec_file: Path,
+) -> MultiCriterionTargetRangeOutput:
+    """Build a `MultiCriterionTargetRangeOutput` from a spec of type
+    `target_range`.
+
+    This spec type is for checks with one or more fixed target/range
+    criteria, each evaluated against a single variable/region/year (or a
+    change over time between two years), not backed by any reference data
+    file. It mirrors what `vetting_adapter.general_checks.ar6_vetting` does
+    in hand-written Python for the built-in IPCC AR6 vetting criteria; use
+    that module as a reference for the kinds of criteria this spec type can
+    express.
+
+    YAML schema
+    -----------
+    name : str
+        Name of the checkset (used as the key in the check registry).
+    type : str
+        Must be `"target_range"`.
+    criteria : list[dict]
+        List of criterion specs, each a mapping with the following keys:
+
+        name : str
+            Name of the criterion (used as its key in the output, and as the
+            `criterion_name` passed to the underlying `Criterion` class).
+        criterion_type : str, optional
+            Either `"single_variable"` (default) or `"change_over_time"`.
+        region, year, variable : required
+            Passed to the underlying `Criterion` class.
+        reference_year : required if `criterion_type` is `"change_over_time"`
+            Passed to `ChangeOverTimeCriterion`.
+        unit : str, optional
+            Unit of `target` and of the criterion's values.
+        target : float, required
+            Target value for the criterion.
+        range, relative_range, tolerance : optional, mutually exclusive
+            `range` is an explicit `[lower, upper]` pair of absolute values.
+            `relative_range` is a `[lower, upper]` pair of multipliers of
+            `target` (built into a `RelativeRange`). `tolerance` is a single
+            symmetric relative tolerance around `target` (equivalent to
+            `relative_range: [1-tolerance, 1+tolerance]`). If none is given,
+            the criterion has no range (only a target).
+        distance_func : dict, optional
+            Override for the default distance function; see
+            `_build_distance_func`.
+    output : dict, optional
+        columns : list[str], optional
+            Subset/order of `"in_range"`, `"distance"`, `"value"` to include
+            in each criterion's output. Defaults to all three.
+        column_titles : dict[str, str], optional
+            Mapping from column name (as in `columns`) to display title.
+        summary_keys : dict[str, str], optional
+            Mapping from column name to the key to use for a summary table
+            (across all criteria) of that column. If given, summary tables
+            are included in the output in addition to the per-criterion
+            tables.
+    """
+    criteria_specs: tp.Optional[list] = spec.get('criteria')
+    if not criteria_specs:
+        raise CheckSpecError(
+            f'Checkset spec "{spec_file}" of type "target_range" must have a '
+            'non-empty "criteria" list.'
+        )
+    criteria: dict[str, CriterionTargetRange] = {}
+    for _entry in criteria_specs:
+        _target_range: CriterionTargetRange = \
+            _build_criterion_target_range(_entry, spec_file=spec_file)
+        if _target_range.name in criteria:
+            raise CheckSpecError(
+                f'Duplicate criterion name "{_target_range.name}" in '
+                f'checkset spec "{spec_file}".'
+            )
+        criteria[_target_range.name] = _target_range
+
+    output_cfg: dict = spec.get('output', {})
+    columns: tp.Optional[list[CTCol]] = [
+        _parse_ctcol(_c, spec_file=spec_file) for _c in output_cfg['columns']
+    ] if 'columns' in output_cfg else None
+    column_titles: tp.Optional[dict[CTCol, str]] = {
+        _parse_ctcol(_k, spec_file=spec_file): _v
+        for _k, _v in output_cfg['column_titles'].items()
+    } if 'column_titles' in output_cfg else None
+    summary_keys: tp.Optional[dict[CTCol, str]] = {
+        _parse_ctcol(_k, spec_file=spec_file): _v
+        for _k, _v in output_cfg['summary_keys'].items()
+    } if 'summary_keys' in output_cfg else None
+
+    return MultiCriterionTargetRangeOutput(
+        criteria=criteria,
+        writer=NoWriter(),
+        columns=columns,
+        column_titles=column_titles,
+        summary_keys=summary_keys,
+    )
+###END def _build_target_range
