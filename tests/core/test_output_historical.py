@@ -88,6 +88,101 @@ class TestHistoricalComparisonOutputExactRegion(unittest.TestCase):
 ###END class TestHistoricalComparisonOutputExactRegion
 
 
+class TestHistoricalComparisonOutputAllCheckedYears(unittest.TestCase):
+    """Checked years beyond the reference's own coverage must still show,
+    with NaN reference/pct-diff -- not be silently dropped by the inner
+    join. See also `future_buffer_years`, which caps how far beyond the
+    reference's last year this goes."""
+
+    def setUp(self):
+        # Reference has no data for 2025 (mirrors a real MS16 gap).
+        self.reference = _idf([
+            ['Historical', 'MS16', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2019, 174.0],
+            ['Historical', 'MS16', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2020, 171.5],
+        ])
+        # Checked data spans well beyond the reference's last year.
+        self.checked = _idf([
+            ['modelA', 'scenA', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2020, 187.7],
+            ['modelA', 'scenA', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2025, 172.5],
+            ['modelA', 'scenA', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2050, 145.7],
+        ])
+    ###END def setUp
+
+    def test_all_checked_years_shown_by_default(self):
+        output = HistoricalComparisonOutput(
+            reference=self.reference,
+            variable='Production|Non-Metallic Minerals|Cement',
+            region='European Union (R9)',
+        )
+        result = output.prepare_output(self.checked)
+        self.assertEqual(
+            set(result['checked_values'].columns), {2020, 2025, 2050}
+        )
+        # historical_values/pct_diff keep the SAME columns as checked_values
+        # -- NaN, not dropped, for years the reference doesn't cover.
+        self.assertEqual(
+            set(result['historical_values'].columns), {2020, 2025, 2050}
+        )
+        self.assertAlmostEqual(result['historical_values'][2020].iloc[0], 171.5)
+        self.assertTrue(pd.isna(result['historical_values'][2025].iloc[0]))
+        self.assertTrue(pd.isna(result['historical_values'][2050].iloc[0]))
+        self.assertAlmostEqual(result['checked_values'][2050].iloc[0], 145.7)
+        self.assertTrue(pd.isna(result['pct_diff'][2050].iloc[0]))
+    ###END def test_all_checked_years_shown_by_default
+
+    def test_future_buffer_years_caps_displayed_years(self):
+        # max(reference.year) == 2020; buffer of 5 -> cutoff at 2025.
+        output = HistoricalComparisonOutput(
+            reference=self.reference,
+            variable='Production|Non-Metallic Minerals|Cement',
+            region='European Union (R9)',
+            future_buffer_years=5,
+        )
+        result = output.prepare_output(self.checked)
+        self.assertEqual(set(result['checked_values'].columns), {2020, 2025})
+        self.assertNotIn(2050, result['checked_values'].columns)
+    ###END def test_future_buffer_years_caps_displayed_years
+
+    def test_is_applicable_respects_future_buffer_years(self):
+        # Checked data entirely beyond the cutoff -> not applicable.
+        far_future_only = _idf([
+            ['modelA', 'scenA', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2050, 145.7],
+        ])
+        output = HistoricalComparisonOutput(
+            reference=self.reference,
+            variable='Production|Non-Metallic Minerals|Cement',
+            region='European Union (R9)',
+            future_buffer_years=5,
+        )
+        self.assertFalse(output.is_applicable(far_future_only))
+    ###END def test_is_applicable_respects_future_buffer_years
+
+    def test_is_applicable_true_even_without_reference_year_overlap(self):
+        # Checked data has years the reference doesn't cover at all, but
+        # still within a variable/region match and (if set) the buffer --
+        # this should count as applicable now (previously required a year
+        # actually present in the reference).
+        only_2025 = _idf([
+            ['modelA', 'scenA', 'European Union (R9)',
+             'Production|Non-Metallic Minerals|Cement', 'Mt/yr', 2025, 172.5],
+        ])
+        output = HistoricalComparisonOutput(
+            reference=self.reference,
+            variable='Production|Non-Metallic Minerals|Cement',
+            region='European Union (R9)',
+        )
+        self.assertTrue(output.is_applicable(only_2025))
+    ###END def test_is_applicable_true_even_without_reference_year_overlap
+
+###END class TestHistoricalComparisonOutputAllCheckedYears
+
+
 class TestHistoricalComparisonOutputFallbackRegion(unittest.TestCase):
 
     def setUp(self):

@@ -378,4 +378,53 @@ class TestBuildHistoricalComparison(unittest.TestCase):
             build_check_from_spec(spec_file, repo_root=self.tmp_dir)
     ###END def test_invalid_region_fallbacks_type_raises
 
+    def test_future_buffer_years_propagates_to_output(self):
+        spec = self._base_spec()
+        spec['future_buffer_years'] = 5
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        _, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+        for _candidates in output.criteria.values():
+            for _candidate in _candidates:
+                self.assertEqual(_candidate.future_buffer_years, 5)
+    ###END def test_future_buffer_years_propagates_to_output
+
+    def test_invalid_future_buffer_years_type_raises(self):
+        spec = self._base_spec()
+        spec['future_buffer_years'] = 'five'
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        with self.assertRaises(CheckSpecError):
+            build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+    ###END def test_invalid_future_buffer_years_type_raises
+
+    def test_sources_propagate_to_output(self):
+        spec = self._base_spec()
+        spec['sources'] = 'sources.yaml'
+        (self.tmp_dir / 'sources.yaml').write_text(yaml.dump({
+            'Population': {
+                'source_name': 'Eurostat',
+                'source_url': 'https://example.org/population',
+            },
+            # Plastics deliberately has no entry, to check the no-citation case.
+        }))
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        _, output = build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+
+        pop_candidate = output.criteria['Population (European Union (R9))'][0]
+        self.assertEqual(pop_candidate.source_name, 'Eurostat')
+        self.assertEqual(pop_candidate.source_url, 'https://example.org/population')
+
+        plastics_candidate = \
+            output.criteria['Production|Chemicals|Plastics (EU27+UK+NO+CH)'][0]
+        self.assertIsNone(plastics_candidate.source_name)
+        self.assertIsNone(plastics_candidate.source_url)
+    ###END def test_sources_propagate_to_output
+
+    def test_missing_sources_file_raises(self):
+        spec = self._base_spec()
+        spec['sources'] = 'does_not_exist.yaml'
+        spec_file: Path = _write_spec(self.tmp_dir, spec)
+        with self.assertRaises(CheckSpecError):
+            build_check_from_spec(spec_file, repo_root=self.tmp_dir)
+    ###END def test_missing_sources_file_raises
+
 ###END class TestBuildHistoricalComparison

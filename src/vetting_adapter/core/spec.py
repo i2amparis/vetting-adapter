@@ -532,6 +532,20 @@ def _build_historical_comparison(
         broadcast_dims : list[str], optional
             Passed to `HistoricalComparisonOutput`. Optional, defaults to
             `["model", "scenario"]`, i.e. checks are model-agnostic.
+    future_buffer_years : int, optional
+        Passed to every `HistoricalComparisonOutput` built. Caps how many
+        years past the reference data's own last year are shown for a
+        checked scenario (e.g. to show a few years of a scenario's
+        near-term trend continuing past the reference data's horizon,
+        without showing its entire multi-decade horizon). Optional,
+        defaults to None (no cap).
+    sources : str, optional
+        Path (relative to `repo_root`) to a YAML file mapping variable name
+        to `{source_name: str, source_url: str}` (either key optional).
+        Purely informational citations for the reference data, passed
+        through to each `HistoricalComparisonOutput` for a caller (e.g. a
+        UI) to display. Optional; a variable with no entry (or no `sources`
+        file at all) simply has no citation.
     """
     reference_cfg: dict = spec.get('reference', {})
     if 'file' not in reference_cfg:
@@ -562,6 +576,29 @@ def _build_historical_comparison(
             'mapping from reference region name to fallback region name.'
         )
 
+    future_buffer_years: tp.Optional[int] = spec.get('future_buffer_years')
+    if future_buffer_years is not None and not isinstance(future_buffer_years, int):
+        raise CheckSpecError(
+            f'"future_buffer_years" in checkset spec "{spec_file}" must be '
+            'an integer.'
+        )
+
+    sources: dict[str, dict[str, str]] = {}
+    if 'sources' in spec:
+        sources_file: Path = repo_root / spec['sources']
+        if not sources_file.is_file():
+            raise CheckSpecError(
+                f'Sources file "{sources_file}" (from checkset spec '
+                f'"{spec_file}") does not exist.'
+            )
+        with sources_file.open('r', encoding='utf-8') as _f:
+            sources = yaml.safe_load(_f) or {}
+        if not isinstance(sources, dict):
+            raise CheckSpecError(
+                f'Sources file "{sources_file}" must contain a mapping from '
+                'variable name to source info.'
+            )
+
     comparison_cfg: dict = spec.get('comparison', {})
     broadcast_dims: list[str] = \
         list(comparison_cfg.get('broadcast_dims', ['model', 'scenario']))
@@ -583,12 +620,19 @@ def _build_historical_comparison(
         _reference_slice: pyam.IamDataFrame = reference.filter(
             variable=_variable, region=_region,
         )  # pyright: ignore[reportAssignmentType]
+        _source: dict[str, str] = sources.get(_variable, {}) or {}
+        _common_kwargs: dict[str, tp.Any] = dict(
+            broadcast_dims=broadcast_dims,
+            future_buffer_years=future_buffer_years,
+            source_name=_source.get('source_name'),
+            source_url=_source.get('source_url'),
+        )
         _candidates: list[HistoricalComparisonOutput] = [
             HistoricalComparisonOutput(
                 reference=_reference_slice,
                 variable=_variable,
                 region=_region,
-                broadcast_dims=broadcast_dims,
+                **_common_kwargs,
             )
         ]
         for _alias_region in region_aliases.get(_region, []):
@@ -596,17 +640,17 @@ def _build_historical_comparison(
                 reference=_reference_slice,
                 variable=_variable,
                 region=_region,
-                broadcast_dims=broadcast_dims,
                 fallback_from_region=_alias_region,
+                **_common_kwargs,
             ))
         if _region in region_fallbacks:
             _candidates.append(HistoricalComparisonOutput(
                 reference=_reference_slice,
                 variable=_variable,
                 region=_region,
-                broadcast_dims=broadcast_dims,
                 include_pct_diff=False,
                 fallback_from_region=region_fallbacks[_region],
+                **_common_kwargs,
             ))
         criteria[_name] = _candidates
 
