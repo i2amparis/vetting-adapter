@@ -9,6 +9,28 @@ import numpy as np
 from pathways_ensemble_analysis.criteria.base import Criterion
 
 
+_CRITERION_NOT_AVAILABLE_MARKER: tp.Final[str] = \
+    'is/are not available in the provided'
+"""Substring of the `ValueError` message that `pathways_ensemble_analysis`
+raises (in `pathways_ensemble_analysis.utils.select_vars`) when none of a
+criterion's required variable/region/year combination is present in the data
+at all. `CriterionTargetRange.get_values` matches on this to distinguish
+"nothing to compute for this criterion" (which it turns into an empty
+result, see `get_values`) from a genuine error.
+"""
+
+
+def _empty_criterion_values() -> pd.Series:
+    """Empty Series with the index level names a populated `Criterion.get_values`
+    result would have (before any `rename_variable_column` renaming), for use
+    as the "not applicable" result in `CriterionTargetRange.get_values`."""
+    return pd.Series(
+        [],
+        index=pd.MultiIndex.from_tuples([], names=['model', 'scenario', 'variable']),
+        dtype='float64',
+    )
+###END def _empty_criterion_values
+
 
 class RelativeRange(tuple[float, float]):
     """Tuple subclass meant to be used for defining relative ranges.
@@ -534,7 +556,7 @@ class CriterionTargetRange:
             get_values_kwargs: Mapping[str, tp.Any] = {},
     ) -> pd.Series:
         """Call `self.criterion.get_values` on an IamDataFrame.
-        
+
         Parameters
         ----------
         file : pyam.IamDataFrame
@@ -543,10 +565,44 @@ class CriterionTargetRange:
         Returns
         -------
         pandas.Series
-            The Series returned by the `.get_values` method of `self.criterion`.
+            The Series returned by the `.get_values` method of `self.criterion`,
+            or an empty Series (with the same index level names a populated
+            one would have) if none of the variable/region/year combination
+            this criterion requires is present in `file` at all. This is
+            deliberately *not* an error: a `MultiCriterionTargetRangeOutput`
+            with several criteria should still be able to compute the ones
+            that *are* applicable, treating this one as "not assessed for any
+            model/scenario" (the same status already used for individual
+            model/scenario pairs that are missing from an otherwise
+            applicable criterion), rather than one inapplicable criterion
+            aborting every other criterion's computation.
         """
-        values: pd.Series = \
-            self._criterion.get_values(file, **get_values_kwargs)
+        try:
+            values: pd.Series = \
+                self._criterion.get_values(file, **get_values_kwargs)
+        except ValueError as exc:
+            if _CRITERION_NOT_AVAILABLE_MARKER not in str(exc):
+                raise
+            values = _empty_criterion_values()
+        except KeyError as exc:
+            # Criteria that select more than one year (e.g.
+            # `pathways_ensemble_analysis.criteria.base.ChangeOverTimeCriterion`,
+            # which needs both `year` and `reference_year`) call
+            # `select_vars` with a *list* of years, which only raises the
+            # `ValueError` handled above if the combined filter is entirely
+            # empty. If the variable is present for some but not all of the
+            # requested years -- most commonly, entirely missing for
+            # `reference_year`, e.g. a dataset that simply doesn't go back
+            # that far -- `select_vars` succeeds, and a later
+            # `sel.timeseries()[year]`-style lookup instead raises a bare
+            # `KeyError` for the missing year. Such a KeyError always has
+            # the (integer) year itself as its sole argument, which is
+            # specific enough to distinguish this from an unrelated bug
+            # inside `self._criterion.get_values` without risking silently
+            # swallowing one.
+            if not (len(exc.args) == 1 and isinstance(exc.args[0], int)):
+                raise
+            values = _empty_criterion_values()
         if self.rename_variable_column:
             if 'variable' not in values.index.names:
                 raise ValueError(
@@ -569,6 +625,59 @@ class CriterionTargetRange:
             )
         return values
     ###END def CriterionTargetRange.get_values
+
+    def is_applicable(self, file: pyam.IamDataFrame) -> bool:
+        """Whether this criterion has any matching data in `file` at all.
+
+        Returns False if none of the variable/region/year combination this
+        criterion requires is present in `file` (in which case `get_values`
+        returns an empty Series rather than raising -- see `get_values`).
+        Note that this performs the same computation as `get_values`, so if
+        you need the values anyway, just call `get_values` and check
+        `.empty` on the result rather than calling both.
+        """
+        return not self.get_values(file).empty
+    ###END def CriterionTargetRange.is_applicable
+
+    def describe_requirements(self) -> dict[str, tp.Any]:
+        """Best-effort description of what this criterion checks.
+
+        Extracts commonly-used attributes (`variable`, `region`, `year`,
+        `reference_year`, `unit`) from the wrapped `criterion` object, for
+        whichever of those it happens to have set, plus this instance's own
+        `name`, `target`, `range` and `unit`. Intended for display purposes
+        (e.g. an overview table of all criteria in a checkset), not for
+        programmatic use: which attributes end up in the returned dict
+        depends entirely on what the wrapped `Criterion` subclass sets, since
+        `pathways_ensemble_analysis`'s `Criterion` classes do not declare a
+        common interface for this.
+
+        Returns
+        -------
+        dict[str, Any]
+            Always has `name`, `target` and `range`. Has `unit` if
+            `self.unit` is set. Has `variable`, `region`, `year`,
+            `reference_year` and/or `criterion_unit` for whichever of those
+            attributes (`criterion_name`/`unit` mapped to `criterion_unit` to
+            avoid clashing with this instance's own `unit`) are present and
+            not None on the wrapped criterion.
+        """
+        result: dict[str, tp.Any] = {
+            'name': self.name,
+            'target': self.target,
+            'range': self.range,
+        }
+        if self.unit is not None:
+            result['unit'] = self.unit
+        for _attr in ('variable', 'region', 'year', 'reference_year'):
+            _value = getattr(self._criterion, _attr, None)
+            if _value is not None:
+                result[_attr] = _value
+        _criterion_unit = getattr(self._criterion, 'unit', None)
+        if _criterion_unit is not None and 'unit' not in result:
+            result['unit'] = _criterion_unit
+        return result
+    ###END def CriterionTargetRange.describe_requirements
 
 
 ###END class CriterionTargetRange
