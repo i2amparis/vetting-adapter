@@ -239,6 +239,29 @@ class TestMultiCriterionTargetRangeOutputPartialApplicability(unittest.TestCase)
         self.assertIn('inapplicable', styled)
     ###END def test_prepare_styled_output_does_not_raise
 
+    def test_inapplicable_criterion_styled_output_exports_to_excel(self):
+        # Regression test: `Styler.map_index(..., axis=0)` on a zero-row
+        # DataFrame (exactly what an inapplicable criterion's per-criterion
+        # sheet now is) makes pandas' own `Styler.to_excel` raise a spurious
+        # KeyError, reproduced directly against a trivial empty-index Styler
+        # unrelated to this package's logic. `apply_common_styling` skips
+        # that call when there are no rows to style; this locks the fix in
+        # against the real xlsxwriter export path used for the Excel
+        # download button.
+        import io
+        styled = self.outputter.prepare_styled_output(
+            _make_iamdf(),
+            prepare_output_kwargs=dict(add_summary_output=True),
+            style_output_kwargs=dict(include_summary=True),
+        )
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+            styled['inapplicable'].to_excel(
+                writer, sheet_name='inapplicable', merge_cells=False,
+            )
+        self.assertGreater(buf.tell(), 0)
+    ###END def test_inapplicable_criterion_styled_output_exports_to_excel
+
 ###END class TestMultiCriterionTargetRangeOutputPartialApplicability
 
 

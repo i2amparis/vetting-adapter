@@ -738,7 +738,15 @@ class CriterionTargetRangeOutput(
             if style.common.COLUMN_FORMAT is not None:
                 styler = \
                     styler.format_index(**style.common.COLUMN_FORMAT, axis=1)
-            if style.common.INDEX_STYLE is not None:
+            # `Styler.map_index(..., axis=0)` followed by `.to_excel()` raises
+            # a spurious `KeyError` from pandas' own Excel-export code when
+            # the DataFrame has zero rows (reproduced directly against a
+            # trivial empty-index Styler, unrelated to this package's own
+            # logic) -- skip it in that case, since there is no row index to
+            # style anyway. This is a real, reachable case now that
+            # `CriterionTargetRange.get_values` returns an empty Series
+            # (rather than raising) for a criterion with no matching data.
+            if style.common.INDEX_STYLE is not None and len(styler.data) > 0:
                 index_style: Callable[[tp.Any], str] | str = \
                     style.common.INDEX_STYLE
                 if callable(index_style):
